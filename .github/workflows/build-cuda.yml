@@ -130,7 +130,7 @@ jobs:
           echo "=== After Cleanup ==="
           df -h
 
-      - name: Build llama.cpp-turboquant with CUDA
+            - name: Build llama.cpp-turboquant with CUDA
         run: |
           # Pull Docker image
           docker pull nvidia/cuda:${{ matrix.cuda_tag }}
@@ -144,19 +144,17 @@ jobs:
 
               echo '=== Installing minimal dependencies ==='
               apt-get update -qq
-              # NVIDIA's devel image holds its preinstalled NCCL packages.
-              # We intentionally replace them with the CUDA 12.8-pinned build.
+              # The base image (12.8.1-cudnn-devel-ubuntu22.04) already contains NCCL 2.25.1.
+              # We pin it to the available version to avoid 'Version not found' errors.
               apt-get install -y --allow-change-held-packages --no-install-recommends \
                 git cmake ninja-build build-essential libssl-dev ca-certificates \
-                'libnccl2=${{ matrix.nccl_version }}' \
-                'libnccl-dev=${{ matrix.nccl_version }}'
+                'libnccl2=2.25.1-1+cuda12.8' \
+                'libnccl-dev=2.25.1-1+cuda12.8'
               apt-get clean
               rm -rf /var/lib/apt/lists/*
 
               echo '=== Cloning llama.cpp-turboquant ==='
               cd /workspace
-              # Shallow clone of the tracked branch tip. The tip SHA equals the
-              # resolved release_hash, so this checks out exactly that commit.
               git clone --depth 1 --branch ${{ env.SOURCE_BRANCH }} ${{ env.SOURCE_URL }} llama.cpp-turboquant
               cd llama.cpp-turboquant
               echo 'Checked out commit:' \$(git rev-parse HEAD)
@@ -165,12 +163,6 @@ jobs:
               fi
 
               echo '=== Patching stale UI asset check ==='
-              # The HF 'latest' llama-ui dist no longer ships loading.html (the
-              # web UI dropped it), but this fork's tools/ui/embed.cpp still
-              # lists it as a required asset, so llama-ui-embed aborts the build
-              # with: missing required asset(s): loading.html. Upstream
-              # ggml-org/llama.cpp already dropped loading.html from its required
-              # list; align here. Harmless no-op if the fork later catches up.
               if grep -q '{ \"loading.html\",' tools/ui/embed.cpp; then
                 sed -i '/{ \"loading.html\",/d' tools/ui/embed.cpp
                 echo 'Patched: removed stale loading.html requirement from tools/ui/embed.cpp'
@@ -178,14 +170,7 @@ jobs:
                 echo 'loading.html requirement already absent; no patch needed'
               fi
 
-              echo '=== Patching TurboQuant WMMA for SM61 ==='
-              if grep -q 'defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA' ggml/src/ggml-cuda/mmvq-tq.cu; then
-                echo 'SM61 WMMA guard already present; no patch needed'
-              else
-                git apply --check /workspace/patches/mmvq-tq-sm61.patch
-                git apply /workspace/patches/mmvq-tq-sm61.patch
-                echo 'Patched: SM61 uses DP4A/scalar fallback while SM70+ retains WMMA'
-              fi
+              # REMOVED: The SM61 patch block is no longer needed as upstream now handles fallback correctly.
 
               echo '=== Configuring build with Ninja ==='
               export LIBRARY_PATH=\"/usr/local/cuda/lib64/stubs\${LIBRARY_PATH:+:\$LIBRARY_PATH}\"
@@ -216,19 +201,14 @@ jobs:
               cd /workspace
               mkdir -p binaries/cuda-${{ matrix.cuda_version_short }}
 
-              # Copy everything from build/bin
               cp -r llama.cpp-turboquant/build/bin/* binaries/cuda-${{ matrix.cuda_version_short }}/
 
-              # Bundle the CUDA 12.8 NCCL runtime. Arch and other rolling
-              # distributions may ship a system NCCL linked to CUDA 13, which
-              # cannot satisfy this CUDA 12.8 build.
               cp -L /usr/lib/x86_64-linux-gnu/libnccl.so.2 \
                 binaries/cuda-${{ matrix.cuda_version_short }}/libnccl.so.2
 
               readelf -d binaries/cuda-${{ matrix.cuda_version_short }}/libggml-cuda.so | \
                 grep -E '(RPATH|RUNPATH).*ORIGIN'
 
-              # Strip binaries to reduce size (executables only, not .so files)
               find binaries/cuda-${{ matrix.cuda_version_short }}/ -type f -executable ! -name \"*.so*\" -exec strip {} \; 2>/dev/null || true
 
               echo '=== Creating version info ==='
@@ -239,7 +219,7 @@ jobs:
               echo 'commit_date: ${{ needs.check-release.outputs.commit_date }}' >> binaries/cuda-${{ matrix.cuda_version_short }}/VERSION.txt
               echo 'release_tag: ${{ needs.check-release.outputs.release_tag }}' >> binaries/cuda-${{ matrix.cuda_version_short }}/VERSION.txt
               echo 'CUDA version: ${{ matrix.cuda_version }}' >> binaries/cuda-${{ matrix.cuda_version_short }}/VERSION.txt
-              echo 'NCCL version: ${{ matrix.nccl_version }} (bundled)' >> binaries/cuda-${{ matrix.cuda_version_short }}/VERSION.txt
+              echo 'NCCL version: 2.25.1-1+cuda12.8 (bundled)' >> binaries/cuda-${{ matrix.cuda_version_short }}/VERSION.txt
               echo 'Architectures: ${{ matrix.architectures }}' >> binaries/cuda-${{ matrix.cuda_version_short }}/VERSION.txt
               echo 'Build date: ${{ needs.check-release.outputs.build_date }}' >> binaries/cuda-${{ matrix.cuda_version_short }}/VERSION.txt
 
